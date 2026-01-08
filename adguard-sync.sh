@@ -4,9 +4,9 @@ set -euo pipefail
 # CONFIG
 MASTER_CONFIG="/opt/AdGuardHome/AdGuardHome.yaml"
 MASTER_FILTER_DIR="/opt/AdGuardHome/data"
-SLAVE="root@192.168.178.246"
+SLAVE="adguard-syn@192.168.178.246"
 SLAVE_BASE="/opt/AdGuardHome"
-SSH_KEY="/root/.ssh/id_ed25519_adguard"
+SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519}"
 SSH_OPTS="-i $SSH_KEY -o BatchMode=yes -o StrictHostKeyChecking=accept-new"
 
 LOGFILE="/var/log/adguard-sync.log"
