@@ -57,8 +57,8 @@ yq eval '
 # Master Config vorbereiten (lokale + schema entfernen)
 yq eval '
 del(.http) |
-del(.dns.bind_host) |
-del(.dns.bind_port) |
+del(.dns.bind_hosts) |
+del(.dns.port) |
 del(.users) |
 del(.schema_version)
 ' /tmp/adguard_master.yaml > /tmp/adguard_master_stripped.yaml
