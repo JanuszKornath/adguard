@@ -18,73 +18,103 @@ fail_mail() {
   echo "$1" | mail -s "AdGuard Sync Fehler" "$MAIL"
 }
 
+on_error() {
+  log "FEHLER: Sync abgebrochen (Zeile $1)"
+  fail_mail "AdGuard Sync auf $(hostname) fehlgeschlagen (Zeile $1). Details: $LOGFILE"
+}
+trap 'on_error $LINENO' ERR
+
 log "=== Sync gestartet ==="
 
 # 1. Filter-Daten (Listen) synchronisieren
+# sessions.db und leases* sind slave-spezifisch (Web-Logins, DHCP) und bleiben lokal
 log "Sync filter data..."
-rsync -avz --delete -e "ssh $SSH_OPTS" \
+rsync -az --delete -e "ssh $SSH_OPTS" \
   --exclude 'stats*' --exclude 'querylog*' --exclude '*.log' \
-  "$MASTER_FILTER_DIR/" "$SLAVE:$SLAVE_BASE/data/" > /dev/null
+  --exclude 'sessions.db' --exclude 'leases*' \
+  "$MASTER_FILTER_DIR/" "$SLAVE:$SLAVE_BASE/data/"
 
-# 2. Master Config zum Slave übertragen (als temporäre Datei)
+# 2. Master Config zum Slave übertragen (in privates Temp-Verzeichnis statt
+# vorhersagbarer /tmp-Pfade)
 log "Transfer Master YAML..."
+REMOTE_TMP=$(ssh $SSH_OPTS "$SLAVE" 'mktemp -d')
 rsync -az -e "ssh $SSH_OPTS" \
   "$MASTER_CONFIG" \
-  "$SLAVE:/tmp/adguard_master.yaml"
+  "$SLAVE:$REMOTE_TMP/adguard_master.yaml"
 
 # 3. Merge + Validation auf dem Slave
 log "Merge and validate on Slave..."
 
-ssh $SSH_OPTS "$SLAVE" << 'EOF'
+ssh $SSH_OPTS "$SLAVE" "REMOTE_TMP='$REMOTE_TMP' bash -s" << 'EOF' 2>&1 | tee -a "$LOGFILE"
 set -euo pipefail
 
 CFG="/opt/AdGuardHome/AdGuardHome.yaml"
 BIN="/opt/AdGuardHome/AdGuardHome"
 
+# Temp-Verzeichnis auch bei Fehlschlag aufräumen
+trap 'rm -rf "$REMOTE_TMP"' EXIT
+
+# Master-Body passt nur zur gleichen Schema-Version; bei Drift nicht mergen
+MASTER_SCHEMA=$(yq eval '.schema_version' "$REMOTE_TMP/adguard_master.yaml")
+SLAVE_SCHEMA=$(yq eval '.schema_version' "$CFG")
+if [ "$MASTER_SCHEMA" != "$SLAVE_SCHEMA" ]; then
+  echo "Schema-Version Master ($MASTER_SCHEMA) != Slave ($SLAVE_SCHEMA). Abbruch." >&2
+  printf 'Schema-Version Master (%s) != Slave (%s). AdGuardHome-Versionen angleichen.\n' \
+    "$MASTER_SCHEMA" "$SLAVE_SCHEMA" | mail -s "AdGuard Sync Fehler auf $(hostname)" root
+  exit 1
+fi
+
 # Backup der aktuellen Slave-Config erstellen
 cp "$CFG" "${CFG}.backup"
 
-# Lokale Slave-Identität sichern (Netzwerk, User UND Schema-Version)
-# Wir speichern das in einer Hilfsdatei
+# Lokale Slave-Identität sichern (Netzwerk, User UND Schema-Version).
+# Keys, die auf dem Slave fehlen (z. B. bind_host vs. bind_hosts je nach
+# Schema-Version), würden als null gemergt und die Config zerschießen —
+# deshalb null-Werte entfernen.
 yq eval '
 {
-  "http": .http, 
-  "users": .users, 
-  "schema_version": .schema_version, 
+  "http": .http,
+  "users": .users,
+  "schema_version": .schema_version,
   "dns": {
-    "bind_host": .dns.bind_host, 
-    "bind_hosts": .dns.bind_hosts, 
+    "bind_host": .dns.bind_host,
+    "bind_hosts": .dns.bind_hosts,
     "port": .dns.port
   }
-}' "$CFG" > /tmp/adguard_local.yaml
+} | del(.. | select(. == null))' "$CFG" > "$REMOTE_TMP/adguard_local.yaml"
 
 # Master-Config strippen (alles entfernen, was wir vom Slave behalten wollen)
 yq eval '
-  del(.http) | 
-  del(.users) | 
-  del(.schema_version) | 
-  del(.dns.bind_host) | 
-  del(.dns.bind_hosts) | 
+  del(.http) |
+  del(.users) |
+  del(.schema_version) |
+  del(.dns.bind_host) |
+  del(.dns.bind_hosts) |
   del(.dns.port)
-' /tmp/adguard_master.yaml > /tmp/adguard_master_stripped.yaml
+' "$REMOTE_TMP/adguard_master.yaml" > "$REMOTE_TMP/adguard_master_stripped.yaml"
 
 # Zusammenführen: Master-Daten bilden die Basis, Slave-Spezifika überschreiben diese
-yq eval-all 'select(fileIndex == 0) * select(fileIndex == 1)' /tmp/adguard_master_stripped.yaml /tmp/adguard_local.yaml > "$CFG"
+yq eval-all 'select(fileIndex == 0) * select(fileIndex == 1)' \
+  "$REMOTE_TMP/adguard_master_stripped.yaml" "$REMOTE_TMP/adguard_local.yaml" \
+  > "$REMOTE_TMP/adguard_merged.yaml"
 
-# Konfiguration auf Validität prüfen
-if ! "$BIN" --check-config -c "$CFG" > /tmp/adguard_config_test.log 2>&1; then
-  echo "AdGuard Config ungueltig. Rollback wird ausgefuehrt."
+# Erst validieren, dann die aktive Config ersetzen — so bleibt sie bei
+# jedem Fehler unangetastet
+if ! "$BIN" --check-config -c "$REMOTE_TMP/adguard_merged.yaml" > "$REMOTE_TMP/config_test.log" 2>&1; then
+  echo "AdGuard Config ungueltig. Aktive Config bleibt unveraendert." >&2
+  mail -s "AdGuard Sync Fehler auf $(hostname)" root < "$REMOTE_TMP/config_test.log"
+  exit 1
+fi
+
+# cat statt mv/cp, damit Inode, Owner und Rechte von $CFG erhalten bleiben
+if ! cat "$REMOTE_TMP/adguard_merged.yaml" > "$CFG"; then
   cp "${CFG}.backup" "$CFG"
-  # Fehlermeldung per Mail versenden (lokal auf Slave)
-  mail -s "AdGuard Sync Fehler auf $(hostname)" root < /tmp/adguard_config_test.log
+  echo "Schreiben der Config fehlgeschlagen. Backup wiederhergestellt." >&2
   exit 1
 fi
 
 # Dienst neu starten, falls Test erfolgreich
 systemctl restart AdGuardHome
-
-# Temporäre Dateien aufräumen
-rm -f /tmp/adguard_master.yaml /tmp/adguard_master_stripped.yaml /tmp/adguard_local.yaml /tmp/adguard_config_test.log
 
 echo "AdGuardHome erfolgreich zusammengefuehrt und neu gestartet."
 EOF
