@@ -38,6 +38,9 @@ rsync -az --delete -e "ssh $SSH_OPTS" \
 # vorhersagbarer /tmp-Pfade)
 log "Transfer Master YAML..."
 REMOTE_TMP=$(ssh $SSH_OPTS "$SLAVE" 'mktemp -d')
+# Remote-Tempdir auch aufräumen, wenn das Master-Skript vor dem
+# Remote-Teil abbricht (dessen eigener EXIT-Trap greift dann nie)
+trap 'ssh $SSH_OPTS "$SLAVE" "rm -rf \"$REMOTE_TMP\"" 2>/dev/null || true' EXIT
 rsync -az -e "ssh $SSH_OPTS" \
   "$MASTER_CONFIG" \
   "$SLAVE:$REMOTE_TMP/adguard_master.yaml"
@@ -47,6 +50,10 @@ log "Merge and validate on Slave..."
 
 ssh $SSH_OPTS "$SLAVE" "REMOTE_TMP='$REMOTE_TMP' bash -s" << 'EOF' 2>&1 | tee -a "$LOGFILE"
 set -euo pipefail
+
+# Nicht-interaktive SSH-Sitzungen haben oft einen minimalen PATH ohne
+# /usr/local/bin (üblicher Ort für manuell installiertes yq)
+export PATH="/usr/local/bin:/usr/bin:/bin:$PATH"
 
 CFG="/opt/AdGuardHome/AdGuardHome.yaml"
 BIN="/opt/AdGuardHome/AdGuardHome"
@@ -113,8 +120,14 @@ if ! cat "$REMOTE_TMP/adguard_merged.yaml" > "$CFG"; then
   exit 1
 fi
 
-# Dienst neu starten, falls Test erfolgreich
-systemctl restart AdGuardHome
+# Dienst neu starten; schlägt das trotz gültiger Config fehl, Backup
+# zurückspielen und erneut starten — DNS ist kritische Infrastruktur
+if ! systemctl restart AdGuardHome; then
+  echo "Neustart fehlgeschlagen. Rollback auf Backup..." >&2
+  cp "${CFG}.backup" "$CFG"
+  systemctl restart AdGuardHome
+  exit 1
+fi
 
 echo "AdGuardHome erfolgreich zusammengefuehrt und neu gestartet."
 EOF

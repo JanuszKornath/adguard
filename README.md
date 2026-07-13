@@ -46,6 +46,12 @@ protokolliert.
 Dieses Skript **überschreibt aktiv die Konfiguration** der Slave-Instanz.  
 Verwende es nur, wenn du die Auswirkungen verstehst und ein Backup existiert.
 
+Der SSH-Benutzer auf dem Slave (`adguard-sync`) benötigt Schreibrechte auf
+`/opt/AdGuardHome` sowie das Recht, `systemctl restart AdGuardHome`
+auszuführen (z. B. über eine passwortlose sudo-Regel, polkit oder indem der
+Sync als `root` läuft — wegen `BatchMode=yes` darf dabei keine
+Passwortabfrage entstehen).
+
 ---
 
 ## Abhängigkeiten
