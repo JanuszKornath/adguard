@@ -1,14 +1,11 @@
 # logrotate-Regel für das Sync-Log auf dem Master
 # Installation: install -m 644 logrotate/adguard-sync /etc/logrotate.d/adguard-sync
-#
-# Das Skript öffnet das Log bei jedem Lauf neu (tee -a), deshalb reicht
-# einfaches Umbenennen — kein copytruncate oder postrotate nötig.
 /var/log/adguard/adguard-sync.log {
+    su root root
     weekly
-    rotate 8
+    rotate 4
     compress
-    delaycompress
     missingok
     notifempty
-    create 0644 root root
+    create 644 root root
 }
