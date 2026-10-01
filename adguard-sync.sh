@@ -6,10 +6,10 @@ MASTER_CONFIG="/opt/AdGuardHome/AdGuardHome.yaml"
 MASTER_FILTER_DIR="/opt/AdGuardHome/data"
 SLAVE="adguard-sync@192.168.178.246"
 SLAVE_BASE="/opt/AdGuardHome"
-SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519}"
+SSH_KEY="${SSH_KEY:-/root/.ssh/id_ed25519_adguard-sync}"
 SSH_OPTS="-i $SSH_KEY -o BatchMode=yes -o StrictHostKeyChecking=accept-new"
 
-LOGFILE="/var/log/adguard-sync.log"
+LOGFILE="/var/log/adguard/adguard-sync.log"
 MAIL="root"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOGFILE"; }
@@ -26,8 +26,13 @@ trap 'on_error $LINENO' ERR
 
 log "=== Sync gestartet ==="
 
+# 0. Besitz auf dem Slave herstellen — AdGuardHome (root) kann Config
+#    und Filterdateien neu schreiben, z. B. nach Änderungen auf dem Slave
+log "Fix ownership on Slave..."
+ssh $SSH_OPTS "$SLAVE" 'sudo -n chown -R adguard-sync:adguard-sync /opt/AdGuardHome/data && sudo -n chown adguard-sync:adguard-sync /opt/AdGuardHome/AdGuardHome.yaml /opt/AdGuardHome/AdGuardHome.yaml.backup'
+
 # 1. Filter-Daten (Listen) synchronisieren
-# sessions.db und leases* sind slave-spezifisch (Web-Logins, DHCP) und bleiben lokal
+#    sessions.db und leases* sind slave-spezifisch (Web-Logins, DHCP) und bleiben lokal
 log "Sync filter data..."
 rsync -az --delete -e "ssh $SSH_OPTS" \
   --exclude 'stats*' --exclude 'querylog*' --exclude '*.log' \
@@ -35,12 +40,14 @@ rsync -az --delete -e "ssh $SSH_OPTS" \
   "$MASTER_FILTER_DIR/" "$SLAVE:$SLAVE_BASE/data/"
 
 # 2. Master Config zum Slave übertragen (in privates Temp-Verzeichnis statt
-# vorhersagbarer /tmp-Pfade)
+#    vorhersagbarer /tmp-Pfade)
 log "Transfer Master YAML..."
 REMOTE_TMP=$(ssh $SSH_OPTS "$SLAVE" 'mktemp -d')
+
 # Remote-Tempdir auch aufräumen, wenn das Master-Skript vor dem
 # Remote-Teil abbricht (dessen eigener EXIT-Trap greift dann nie)
 trap 'ssh $SSH_OPTS "$SLAVE" "rm -rf \"$REMOTE_TMP\"" 2>/dev/null || true' EXIT
+
 rsync -az -e "ssh $SSH_OPTS" \
   "$MASTER_CONFIG" \
   "$SLAVE:$REMOTE_TMP/adguard_master.yaml"
@@ -122,10 +129,10 @@ fi
 
 # Dienst neu starten; schlägt das trotz gültiger Config fehl, Backup
 # zurückspielen und erneut starten — DNS ist kritische Infrastruktur
-if ! systemctl restart AdGuardHome; then
+if ! sudo -n systemctl restart AdGuardHome; then
   echo "Neustart fehlgeschlagen. Rollback auf Backup..." >&2
   cp "${CFG}.backup" "$CFG"
-  systemctl restart AdGuardHome
+  sudo -n systemctl restart AdGuardHome
   exit 1
 fi
 
