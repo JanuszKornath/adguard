@@ -1,6 +1,6 @@
 # AdGuard Home Master–Slave Sync Script
 
-Dieses Bash-Skript synchronisiert eine **AdGuard Home Master-Instanz** mit einer **Slave-Instanz** (für weitere Slaves das Skript mit angepasster `SLAVE`-Variable mehrfach einrichten).
+Dieses Bash-Skript synchronisiert eine **AdGuard Home Master-Instanz** mit einer **Slave-Instanz**. Weitere Slaves bekommen je einen eigenen Cronjob mit anderer `SLAVE`-Variable (siehe [Installation und Cronjob](#installation-und-cronjob)); jeder Slave muss AdGuardHome unter `/opt/AdGuardHome` installiert haben.
 
 Ziel ist es, Filterlisten und Konfigurationsänderungen zentral zu pflegen, während **slave-spezifische Einstellungen** (z. B. Web-Interface, DNS-Listener, Benutzer) erhalten bleiben.
 
@@ -131,6 +131,36 @@ Befehle per sudo.
    install -m 644 logrotate/adguard-sync /etc/logrotate.d/adguard-sync
    ```
 
+### Installation und Cronjob
+
+1. **Skript installieren:**
+
+   ```bash
+   install -m 755 adguard-sync.sh /usr/local/bin/adguard-sync.sh
+   ```
+
+2. **Slave eintragen:** Der Standard-Slave steht fest im Skript
+   (`SLAVE="adguard-sync@192.168.178.246"`). Entweder dort anpassen oder
+   `SLAVE` beim Aufruf setzen.
+
+3. **Cronjob** in `/etc/cron.d/adguard-sync` (Intervall nach Bedarf), je
+   Slave eine Zeile:
+
+   ```
+   # m h dom mon dow user command
+   0 * * * * root /usr/local/bin/adguard-sync.sh >/dev/null 2>&1
+   5 * * * * root SLAVE=adguard-sync@192.168.178.247 /usr/local/bin/adguard-sync.sh >/dev/null 2>&1
+   ```
+
+   Die Ausgabe landet ohnehin im Log, Fehler kommen per Mail. Die Läufe für
+   mehrere Slaves zeitlich versetzen, damit nicht alle Slaves gleichzeitig
+   neu starten.
+
+**Grenze bei mehreren Slaves:** Der Remote-Teil (`chown`, Merge, Neustart)
+und die sudo-Regeln verwenden `/opt/AdGuardHome` fest. Ein Slave mit anderem
+Installationspfad lässt sich deshalb nicht allein über `SLAVE`/`SLAVE_BASE`
+anbinden.
+
 ### Warum der chown am Anfang?
 
 AdGuardHome läuft als `root` und schreibt seine YAML bei **jedem Start** neu —
@@ -146,10 +176,15 @@ ersten), nicht erst nach Änderungen auf dem Slave.
 ### Auf Master **und** Slave erforderlich:
 - `bash`
 - `rsync`
-- `ssh`
-- `yq` **Version 4.x**
+- `ssh` (Client auf dem Master, `sshd` auf dem Slave)
 - `mail` (z. B. aus `mailutils` oder `s-nail`)
 - `AdGuardHome`
+
+### Nur auf dem Slave:
+- `yq` **Version 4.x** (Merge läuft ausschließlich auf dem Slave)
 - `systemd`
-- `sudo` (Slave)
-- `logrotate` (Master)
+- `sudo`
+
+### Nur auf dem Master:
+- `logrotate`
+- `cron`
