@@ -4,7 +4,10 @@ set -euo pipefail
 # CONFIG
 MASTER_CONFIG="/opt/AdGuardHome/AdGuardHome.yaml"
 MASTER_FILTER_DIR="/opt/AdGuardHome/data"
-SLAVE="adguard-sync@192.168.178.246"
+# SLAVE per Umgebung überschreibbar, z. B. für weitere Slaves im Cronjob.
+# SLAVE_BASE ist nur das rsync-Ziel; der Remote-Teil und die sudo-Regeln
+# verwenden /opt/AdGuardHome fest, ein Slave braucht also dieses Layout.
+SLAVE="${SLAVE:-adguard-sync@192.168.178.246}"
 SLAVE_BASE="/opt/AdGuardHome"
 SSH_KEY="${SSH_KEY:-/root/.ssh/id_ed25519_adguard-sync}"
 SSH_OPTS="-i $SSH_KEY -o BatchMode=yes -o StrictHostKeyChecking=accept-new"
@@ -24,7 +27,7 @@ on_error() {
 }
 trap 'on_error $LINENO' ERR
 
-log "=== Sync gestartet ==="
+log "=== Sync gestartet ($SLAVE) ==="
 
 # 0. Besitz auf dem Slave herstellen — AdGuardHome (root) kann Config
 #    und Filterdateien neu schreiben, z. B. nach Änderungen auf dem Slave
